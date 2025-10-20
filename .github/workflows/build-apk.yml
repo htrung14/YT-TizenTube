@@ -1,0 +1,110 @@
+name: Build YouTube-Branded TizenTube APK
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        api-level: 34
+        build-tools: 34.0.0
+        ndk-version: 26.1.10909125
+        cmake-version: 3.22.1
+        
+    - name: Cache Gradle packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Download YouTube Logo
+      run: |
+        curl -o youtube_logo.png "https://logos-world.net/wp-content/uploads/2020/04/YouTube-Logo.png"
+        
+    - name: Replace App Icons with YouTube Logo
+      run: |
+        APP_RES_ROOT="starboard/android/apk/app/src/app/res"
+        
+        # Install ImageMagick for image processing
+        sudo apt-get update && sudo apt-get install -y imagemagick
+        
+        # Create YouTube icons in all required sizes
+        convert youtube_logo.png -resize 48x48 "$APP_RES_ROOT/mipmap-mdpi/ic_app.png"
+        convert youtube_logo.png -resize 72x72 "$APP_RES_ROOT/mipmap-hdpi/ic_app.png"
+        convert youtube_logo.png -resize 96x96 "$APP_RES_ROOT/mipmap-xhdpi/ic_app.png"
+        convert youtube_logo.png -resize 144x144 "$APP_RES_ROOT/mipmap-xxhdpi/ic_app.png"
+        convert youtube_logo.png -resize 192x192 "$APP_RES_ROOT/mipmap-xxxhdpi/ic_app.png"
+        
+    - name: Create debug keystore
+      run: |
+        mkdir -p ~/.android
+        keytool -genkeypair -v -keystore ~/.android/debug.keystore -storepass android \
+          -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+          -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          
+    - name: Make gradlew executable
+      run: chmod +x starboard/android/apk/gradlew
+      
+    - name: Build Debug APK
+      working-directory: starboard/android/apk
+      run: |
+        export ANDROID_HOME=$ANDROID_SDK_ROOT
+        export ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125
+        ./gradlew clean app:assembleDebug
+        
+    - name: Build Release APK  
+      working-directory: starboard/android/apk
+      run: |
+        export ANDROID_HOME=$ANDROID_SDK_ROOT
+        export ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125
+        ./gradlew app:assembleRelease
+        
+    - name: Sign APKs
+      run: |
+        find starboard/android/apk -name "*.apk" -exec \
+          $ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner sign \
+          --ks ~/.android/debug.keystore --ks-key-alias androiddebugkey \
+          --ks-pass pass:android --key-pass pass:android {} \;
+          
+    - name: Rename APKs
+      run: |
+        mkdir -p release-apks
+        find starboard/android/apk -name "*debug*.apk" -exec cp {} release-apks/YouTube-TizenTube-debug.apk \;
+        find starboard/android/apk -name "*release*.apk" -exec cp {} release-apks/YouTube-TizenTube-release.apk \;
+        
+    - name: Upload APKs as Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: youtube-tizentube-apks
+        path: release-apks/
+        
+    - name: Create Release
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: release-apks/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
